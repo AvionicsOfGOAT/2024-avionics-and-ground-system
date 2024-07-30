@@ -1,65 +1,77 @@
-import math
-import random
 import time
 
 import numpy as np
 
 
 class ComplementaryFilter(object):
-    def __init__(self, alpha):
-        self.alpha = alpha
+    def __init__(self, alpha_pos=0.98, alpha_att=0.98, dt=0.01):
+        self.alpha_pos = alpha_pos
+        self.alpha_att = alpha_att
+
+        self.position = np.zeros(3)
+        self.velocity = np.zeros(3)
         self.attitude = np.zeros(3)
 
-    def update(self, accel, gyro, dt):
-        accel_norm = accel / np.linalg.norm(accel)
+        self.dt = dt  # 100Hz update rate
 
-        pitch_accel = math.atan2(
-            -accel_norm[0], math.sqrt(accel_norm[1] ** 2 + accel_norm[2] ** 2)
+    def update(self, gps_pos, imu_accel, imu_gyro):
+        # Update position
+        gps_vel = (gps_pos - self.position) / self.dt
+        imu_pos = self.position + self.velocity * self.dt + 0.5 * imu_accel * self.dt**2
+        self.position = self.alpha_pos * imu_pos + (1 - self.alpha_pos) * gps_pos
+
+        # Update velocity
+        imu_vel = self.velocity + imu_accel * self.dt
+        self.velocity = self.alpha_pos * imu_vel + (1 - self.alpha_pos) * gps_vel
+
+        # Update attitude
+        gyro_attitude = self.attitude + imu_gyro * self.dt
+        accel_attitude = np.array(
+            [
+                np.arctan2(imu_accel[1], imu_accel[2]),
+                np.arctan2(
+                    -imu_accel[0], np.sqrt(imu_accel[1] ** 2 + imu_accel[2] ** 2)
+                ),
+                0,
+            ]
         )
-        roll_accel = math.atan2(accel_norm[1], accel_norm[2])
+        self.attitude = (
+            self.alpha_att * gyro_attitude + (1 - self.alpha_att) * accel_attitude
+        )
 
-        self.attitude[0] += gyro[0] * dt  # Roll
-        self.attitude[1] += gyro[1] * dt  # Pitch
-        self.attitude[2] += gyro[2] * dt  # Yaw
-
-        self.attitude[0] = (1 - self.alpha) * self.attitude[0] + self.alpha * roll_accel
-        self.attitude[1] = (1 - self.alpha) * self.attitude[
-            1
-        ] + self.alpha * pitch_accel
-
-        return self.attitude
+    def get_state(self):
+        return {
+            "position": self.position,
+            "velocity": self.velocity,
+            "attitude": self.attitude,
+        }
 
 
 if __name__ == "__main__":
-    # trunk-ignore(bandit/B311)
-    alpha = random.random()
-    filter = ComplementaryFilter(alpha)
+    alpha_pos = 0.98
+    alpha_att = 0.98
+    dt = 0.01
 
-    position = np.zeros(3)
-    velocity = np.zeros(3)
+    cf = ComplementaryFilter(alpha_pos=alpha_pos, alpha_att=alpha_att, dt=dt)
 
     # Simulated IMU and GPS data
-    accel_data = np.random.rand(3)  # Accelerometer data (x, y, z)
-    gyro_data = np.random.rand(3)   # Gyroscope data (roll, pitch, yaw)
-    gps_data = np.random.rand(3)    # GPS data (latitude, longitude, altitude)
-
-    d = 0.1
+    gps_position = np.array([1.0, 2.0, 3.0])                # GPS data (latitude, longitude, altitude)
+    imu_acceleration = np.array([0.1, 0.2, 9.8])            # Accelerometer data (x, y, z)
+    imu_angular_velocity = np.array([0.01, 0.02, 0.03])     # Gyroscope data (roll, pitch, yaw)
 
     while True:
-        attitude = filter.update(accel_data, gyro_data, d)
-        position = gps_data - np.array([0.0, 0.0, 200.0])
+        cf.update(gps_position, imu_acceleration, imu_angular_velocity)
 
-        velocity += accel_data * d
+        state = cf.get_state()
+        print("Position:", state["position"])
+        print("Velocity:", state["velocity"])
+        print("Attitude:", state["attitude"])
 
-        print("Attitude (roll, pitch, yaw):", attitude)
-        print("Position (latitude, longitude, altitude):", position)
-        print("Velocity (x, y, z):", velocity)
-        print("=" * 50)
 
-        # Simulate new data for the next iteration
-        accel_data = np.random.rand(3)
-        gyro_data = np.random.rand(3) * 0.1
-        gps_data += np.random.rand(3) * 0.1
+        # Replace this with actual IMU and GPS data acquisition
+        imu_acceleration = np.random.rand(3)
+        imu_angular_velocity = np.random.rand(3) * 0.1
+        gps_position += np.random.rand(3) * 0.1
 
-        time.sleep(d)
-
+        # Replace this with actual timing control
+        time.sleep(dt)
