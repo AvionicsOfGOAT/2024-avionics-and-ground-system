@@ -67,7 +67,6 @@ if __name__ == "__main__":
         print("Velocity:", state["velocity"])
         print("Attitude:", state["attitude"])
 
-
         # Replace this with actual IMU and GPS data acquisition
         imu_acceleration = np.random.rand(3)
         imu_angular_velocity = np.random.rand(3) * 0.1
