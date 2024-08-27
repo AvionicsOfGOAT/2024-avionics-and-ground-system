@@ -1,110 +1,123 @@
-import time
-from multiprocessing import Process, Queue
+import asyncio
+import logging
+import signal
+from typing import Any, Dict
 
-from data_processor import DataProcessor
+from config import Config
 from database import Database
 from decision_maker import DecisionMaker
 from parachute import Parachute
-from sensor import Bmp, Ebimu, Gps
+from sensor import BMP, EBIMU, GPS
+
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+)
+logger = logging.getLogger(__name__)
 
 
-def main():
-    bmp = Bmp()
-    ebimu = Ebimu()
-    gps = Gps()
-    db = Database()
+class FlightController:
+    def __init__(self):
+        self.config = Config()
+        self.db = Database()
+        self.decision_maker = DecisionMaker()
+        self.parachute = Parachute()
+        self.sensors = {"BMP": BMP(), "GPS": GPS(), "EBIMU": EBIMU()}
+        self.data_queues: Dict[str, asyncio.Queue] = {
+            sensor_name: asyncio.Queue() for sensor_name in self.sensors
+        }
+        self.database_queue = asyncio.Queue()
+        self.running = True
+        self.current_data = {"altitude": None, "orientation": None, "position": None}
 
-    bmp_queue = Queue()
-    ebimu_queue = Queue()
-    gps_queue = Queue()
-    database_queue = Queue()
+    async def process_sensor_data(self):
+        while self.running:
+            for sensor_name, queue in self.data_queues.items():
+                try:
+                    sensor_data = queue.get_nowait()
+                    await self.handle_sensor_data(sensor_name, sensor_data)
+                except asyncio.QueueEmpty:
+                    pass
+                except Exception as e:
+                    logger.error(f"Error processing {sensor_name} data: {e}")
 
-    bmp_process = Process(target=bmp.reader, args=(bmp_queue,))
-    ebimu_process = Process(target=ebimu.reader, args=(ebimu_queue,))
-    gps_process = Process(target=gps.reader, args=(gps_queue,))
-    database_process = Process(target=db.saver, args=(database_queue,))
+            if all(self.current_data.values()):
+                await self.make_deployment_decision()
 
-    bmp_process.daemon = True
-    ebimu_process.daemon = True
-    gps_process.daemon = True
-    database_process.daemon = True
+            await asyncio.sleep(0.01)
 
-    bmp_process.start()
-    ebimu_process.start()
-    gps_process.start()
-    database_process.start()
+    async def handle_sensor_data(self, sensor_name: str, data: Any):
+        await self.database_queue.put((sensor_name, data))
 
-    parachute = Parachute()
-    decision_maker = DecisionMaker()
-    data_processor = DataProcessor()
+        if sensor_name == "BMP":
+            self.current_data["altitude"] = data
+        elif sensor_name == "EBIMU":
+            self.current_data["orientation"] = data
+        elif sensor_name == "GPS":
+            self.current_data["position"] = data
 
-    is_altitude_descent = False
-    is_descent_angle = False
-    is_force_ejection_active = False
-    for i in range(10):
-        database_queue.put(["PARASHUTE", 0])
-        database_queue.put(["ATBD", 0])
-        database_queue.put(["AGBD", 0])
-        database_queue.put(["FE", 0])
-    for i in range(10, -1, -1):
-        time.sleep(1)
-        print(i)
-    atbd = 0
-    agbd = 0
-    fe = 0
-    last_time = time.time()
-    print("started.")
-    while True:
-        current_time = time.time()
-        bmp_value = -1
-        ebimu_value = -1
-        gps_value = -1
-        if not bmp_queue.empty():
-            bmp_value = bmp_queue.get()
-            database_queue.put([bmp.name, bmp_value])
-            # print(bmp_value)
-        if not ebimu_queue.empty():
-            ebimu_value = ebimu_queue.get()
-            database_queue.put([ebimu.name, ebimu_value])
-            # print(ebimu_value)
-        if not gps_queue.empty():
-            gps_value = gps_queue.get()
-            database_queue.put([gps.name, gps_value])
-            print(gps_value)
-        exact_position = [0, 0, 0]
+    async def make_deployment_decision(self):
+        should_deploy, reason = await self.decision_maker.make_decision(
+            self.current_data["altitude"],
+            self.current_data["orientation"],
+            self.current_data["position"],
+        )
 
-        decision_maker.is_in_critical_area(exact_position)
-        if bmp_value != -1:
-            if current_time - last_time >= 0.1:
-                last_time = current_time
-                is_altitude_descent = decision_maker.is_altitude_descent(bmp_value)
-        if ebimu_value != -1:
-            is_descent_angle = decision_maker.is_descent_angle(ebimu_value)
-        is_force_ejection_active = decision_maker.is_force_ejection_active()
+        if should_deploy:
+            await self.deploy_parachute(reason)
 
-        parachute_status = parachute.is_parachute_deployed
-        if is_altitude_descent:
-            if parachute_status == False:
-                parachute.deploy()
-            if atbd == 0:
-                atbd = 1
-                database_queue.put(["ATBD", 1])
-                database_queue.put(["PARASHUTE", 1])
-        if is_descent_angle and False:
-            if parachute_status == False:
-                parachute.deploy()
-            if agbd == 0:
-                agbd = 1
-                database_queue.put(["AGBD", 1])
-                database_queue.put(["PARASHUTE", 1])
-        if is_force_ejection_active:
-            print("FE")
-            if parachute_status == False:
-                parachute.deploy()
-            if fe == 0:
-                fe = 1
-                database_queue.put(["PARASHUTE", 2])
+    async def deploy_parachute(self, reason: str):
+        if not self.parachute.is_deployed:
+            await self.parachute.deploy()
+            await self.database_queue.put(("PARACHUTE", reason))
+            logger.warning(f"Parachute deployed. {reason}")
+
+    async def save_to_database(self):
+        while self.running:
+            try:
+                name, data = await self.database_queue.get()
+                await self.db.save([(0, name, data)])
+            except Exception as e:
+                logger.error(f"Error saving to database: {e}")
+
+    async def run_sensor(self, sensor_name: str):
+        sensor = self.sensors[sensor_name]
+        queue = self.data_queues[sensor_name]
+        await sensor.run(queue)
+
+    async def run(self):
+        tasks = [
+            self.process_sensor_data(),
+            self.save_to_database(),
+        ]
+
+        for sensor_name in self.sensors:
+            tasks.append(self.run_sensor(sensor_name))
+
+        await asyncio.gather(*tasks)
+
+    def stop(self):
+        self.running = False
+        logger.info("Stopping Flight Controller.")
+
+
+async def main():
+    controller = FlightController()
+
+    def signal_handler():
+        logger.info("Received stop signal.")
+        controller.stop()
+
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        asyncio.get_running_loop().add_signal_handler(sig, signal_handler)
+
+    try:
+        await controller.run()
+    except Exception as e:
+        logger.error(f"Unexpected error in main loop: {e}")
+    finally:
+        controller.parachute.cleanup()
+        logger.info("Flight controller stopped.")
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
