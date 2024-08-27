@@ -1,62 +1,61 @@
-import datetime
-import json
+import logging
+from contextlib import contextmanager
+from typing import List, Tuple
 
 import mysql.connector
+from mysql.connector.pooling import MySQLConnectionPool
+from tenacity import retry, stop_after_attempt, wait_exponential
 
-db_config = json.load(open("db_config.json", "r"))
+from config import DB_CONFIG
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 
 class Database:
     def __init__(self):
-        self.connect()
+        self.db_config = DB_CONFIG
+        self.pool = MySQLConnectionPool(
+            pool_name="mypool", pool_size=5, pool_reset_session=True, **self.db_config
+        )
 
-    def connect(self):
+    @contextmanager
+    def get_connection(self):
+        conn = self.pool.get_connection()
         try:
-            self.conn = mysql.connector.connect(**db_config)
-            if self.conn.is_connected():
-                self.cursor = self.conn.cursor()
-                self.conn.autocommit = True
-                print("MySQL connected.")
+            yield conn
         except mysql.connector.Error as e:
-            print(f"Error connecting to MySQL: {e}")
+            logger.error(f"Database connection error: {e}")
+            raise
+        finally:
+            conn.close()
 
-    def saver(self, queue):
-        buffer = []
-        while True:
-            if not queue.empty():
-                queue_data = queue.get()
-                buffer.append(
-                    (
-                        0,
-                        queue_data[0],
-                        datetime.datetime.now().time(),
-                        str(queue_data[1]),
-                    )
-                )
-                if len(buffer) >= 30:
-                    self.save(buffer)
-                    buffer = []
+    @retry(
+        stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10)
+    )
+    def save(self, data_list: List[Tuple]):
+        query = "INSERT INTO data (id, name, timestamp, data) VALUES (%s, %s, %s, %s)"
+        with self.get_connection() as conn:
+            try:
+                with conn.cursor() as cursor:
+                    cursor.executemany(query, data_list)
+                conn.commit()
+                logger.info(f"Successfully saved {len(data_list)} records.")
+            except mysql.connector.Error as e:
+                logger.error(f"Error saving data: {e}")
+                conn.rollback()
+                raise
 
-    def save(self, data_list):
-        try:
-            query = (
-                "INSERT INTO data (id, name, timestamp, data) VALUES (%s, %s, %s, %s)"
-            )
-            # query = "INSERT INTO sensor (id, sensor_type, timestamp, data) VALUES (%s, %s, %s, %s)"
-
-            self.cursor.executemany(query, data_list)
-            self.conn.commit()
-        except mysql.connector.Error as e:
-            print(f"{name} Error inserting data into MySQL: {e}")
-
-    def get_last(self, name):
-        try:
-            query = "SELECT * FROM data WHERE name = %s ORDER BY id DESC LIMIT 1"
-            self.cursor.execute(query, (name,))
-            result = self.cursor.fetchone()
-            if result:
-                return result[1]
-            return None
-        except mysql.connector.Error as e:
-            print(f"Error fetching data from MySQL: {e}")
-            return None
+    @retry(
+        stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10)
+    )
+    def get_last(self, name: str):
+        query = "SELECT * FROM data WHERE name = %s ORDER BY id DESC LIMIT 1"
+        with self.get_connection() as conn:
+            try:
+                with conn.cursor() as cursor:
+                    cursor.execute(query, (name,))
+                    return cursor.fetchone()
+            except mysql.connector.Error as e:
+                logger.error(f"Error fetching last record for {name}: {e}")
+                raise
