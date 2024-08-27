@@ -1,7 +1,0 @@
-{
-  "host": "db_ip.txt",
-  "port": 3306,
-  "database": "goat",
-  "user": "root",
-  "password": "db_pw.txt"
-}
