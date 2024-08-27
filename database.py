@@ -1,14 +1,9 @@
 import datetime
+import json
 
 import mysql.connector
 
-db_config = {
-    "host": "43.202.228.198",
-    "port": 3306,
-    "database": "goat",
-    "user": "root",
-    "password": "tkrhk0123!!",
-}
+db_config = json.load(open("db_config.json", "r"))
 
 
 class Database:
