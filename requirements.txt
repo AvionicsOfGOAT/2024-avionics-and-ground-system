@@ -1,0 +1,23 @@
+# Database
+mysql-connector-python==8.0.26
+
+# Configuration
+PyYAML==6.0
+
+# Sensor Libraries
+adafruit-circuitpython-bmp280==3.2.14
+pyserial==3.5
+pyubx2==1.2.19
+
+# Raspberry Pi GPIO
+RPi.GPIO==0.7.0
+
+# Asynchronous Programming
+asyncio==3.4.3
+
+# Utility Libraries
+tenacity==8.0.1
+numpy==1.21.2
+
+# Type Hinting
+typing_extensions==4.0.1

@@ -1,0 +1,26 @@
+# Database Configuration
+database_host: localhost
+database_port: 3306
+database_name: flight_data
+database_user: flight_user
+database_password: flight_password
+
+# Sensor Configuration
+bmp_i2c_address: 0x76
+gps_serial_port: /dev/ttyAMA0
+gps_baud_rate: 9600
+ebimu_serial_port: /dev/ttyUSB0
+ebimu_baud_rate: 115200
+
+# Parachute Configuration
+parachute_servo_pin: 18
+parachute_relay_pin: 17
+
+# Decision Maker Configuration
+decision_maker_window_size: 10
+decision_maker_falling_confirmation_threshold: 5
+decision_maker_no_deploy_altitude: 100.0
+decision_maker_estimated_max_altitude: 400.0
+decision_maker_estimated_min_altitude: -10.0
+decision_maker_initial_theta: 9.514
+decision_maker_critical_angle_threshold: 80.0
